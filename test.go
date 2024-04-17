@@ -3,6 +3,10 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"runtime/pprof"
 	"time"
@@ -11,11 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/htcat/htcat"
 )
-
-type Presigner struct {
-	PresignClient *s3.PresignClient
-}
 
 func main() {
 	// Create a CPU profile file
@@ -45,6 +46,8 @@ func main() {
 	}
 
 	downloadImageWithS3Downloader(bucketName, keyName)
+
+	// downloadImageWithHtcatDownloader(bucketName, keyName)
 }
 
 func downloadImageWithS3Downloader(bucketName string, key string) {
@@ -83,25 +86,99 @@ func downloadImageWithS3Downloader(bucketName string, key string) {
 	f.Close()
 }
 
-// func downloadImageWithHtcatDownloader() {
-// 	sess, err := session.NewSession(&aws.Config{
-// 		Region: aws.String("us-west-1"), // Set your desired AWS region
-// 	})
-// 	if err != nil {
-// 		fmt.Println("Failed to create AWS session:", err)
-// 		return
-// 	}
+func downloadImageWithHtcatDownloader(bucketName string, key string) {
 
-// }
+	var startTime = time.Now()
+	runTest(bucketName, key)
+	var totalTime = time.Since(startTime).Seconds()
+	fmt.Printf("Downloaded the given tar file in %f\n", totalTime)
+
+}
+
+func getS3PresignedUrl(bucketName string, keyName string) string {
+	sess, err := session.NewSession(&aws.Config{
+		Region: aws.String("us-west-1")},
+	)
+
+	if err != nil {
+		log.Println("Failed to create new session", err)
+	}
+
+	// Create S3 service client
+	svc := s3.New(sess)
+
+	req, _ := svc.GetObjectRequest(&s3.GetObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(keyName),
+	})
+	urlStr, err := req.Presign(15 * time.Minute)
+
+	if err != nil {
+		log.Println("Failed to sign request", err)
+	}
+
+	return urlStr
+}
+
+func fetchFromHtCat(urlStr string) (io.ReadCloser, error) {
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		log.Println("Failed to parse url", err)
+	}
+
+	hc := http.DefaultClient
+	htc := htcat.New(hc, parsedURL, 1, 20)
+	// fmt.Println("After htc call")
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		_, err := htc.WriteTo(pw)
+		if err != nil {
+			log.Println("Failed to fetch url", err)
+		}
+	}()
+	return pr, nil
+}
+
+func runTest(bucketName string, keyName string) {
+
+	url := getS3PresignedUrl(bucketName, keyName)
+
+	// fmt.Println("signed url: ", url)
+	pr, err := fetchFromHtCat(url)
+	if err != nil {
+		fmt.Println("Failed in the test during fetchFromHtcat")
+	}
+	defer pr.Close()
+
+	opFile, err := os.Create(keyName)
+	if err != nil {
+		fmt.Println("Failed in the test during file creation")
+	}
+
+	defer opFile.Close()
+
+	_, err = io.Copy(opFile, pr)
+	if err != nil {
+		fmt.Println("Failed in the test during io Copy")
+	}
+
+	log.Println("Data fetched and written to another file")
+	// rd := bufio.NewReader(stdout)
+	// defer reader.Close()
+	// output, err := io.ReadAll(reader)
+	// if err != nil {
+	// 	fmt.Println("Failed ReadAll")
+	// }
+	// fmt.Print(output)
+}
 
 /*
 
-	Is this the right way?
-	for now, yes - It would be better if we can run htcat with a presigned url or see if that can be done easily
-	How to check for memory consumption?
-	How to effectively run this for htcat?
-	Testing for unpack?
-	Writing this into a file? would that be the same as Unpack?
-	testing multilayer pull?
+	Is io.Copy an unpack? why is it significantly slower than just s3downloader?
+
+	Downloaded the given tar file in 25.986330 - s3Downloader
+	Downloaded the given tar file in 78.803563 - htcat
+	How to effectively benchmark this? Doesn't seem like it is a fair comparision.
 
 */
