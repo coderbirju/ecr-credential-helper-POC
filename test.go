@@ -3,7 +3,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -22,6 +21,10 @@ func main() {
 	// Create a CPU profile file
 	bucketName := "benchmark-images"
 	keyName := "3gb-single.tar"
+	chunkSize := 20
+	// parallelism := 1
+	numRuns := 10
+
 	cpuProfileFile, err := os.Create("cpu.prof")
 	if err != nil {
 		panic(err)
@@ -45,12 +48,22 @@ func main() {
 		panic(err)
 	}
 
-	downloadImageWithS3Downloader(bucketName, keyName)
+	fileName := fmt.Sprintf("%s%s", "/home/ec2-user/htcat-vs-s3Downloader/", keyName)
 
-	// downloadImageWithHtcatDownloader(bucketName, keyName)
+	for j := 1; j < 7; j++ {
+		for i := 0; i < numRuns; i++ {
+			fmt.Printf("Running benchmark %d with parallel args %d... \n", i, j)
+
+			os.Remove(fileName)
+			// downloadImageWithS3Downloader(bucketName, keyName, parallelism, chunkSize)
+			downloadImageWithHtcatDownloader(bucketName, keyName, j, chunkSize)
+			fmt.Printf("Run %d with parallel arg %d completed.\n", i, j)
+		}
+
+	}
 }
 
-func downloadImageWithS3Downloader(bucketName string, key string) {
+func downloadImageWithS3Downloader(bucketName string, key string, parallelism int, chunkSize int) {
 	sess, err := session.NewSession(&aws.Config{
 		Region: aws.String("us-west-1"), // Set your desired AWS region
 	})
@@ -61,7 +74,10 @@ func downloadImageWithS3Downloader(bucketName string, key string) {
 
 	// Create an S3 client and downloader
 
-	downloader := s3manager.NewDownloader(sess)
+	downloader := s3manager.NewDownloader(sess, func(d *s3manager.Downloader) {
+		d.PartSize = int64(chunkSize) * 1024 * 1024 // 20MB per part
+		d.Concurrency = parallelism
+	})
 
 	f, err := os.Create(key)
 	if err != nil {
@@ -81,17 +97,30 @@ func downloadImageWithS3Downloader(bucketName string, key string) {
 		fmt.Println("Failed to download file:", err)
 		return
 	}
-
-	fmt.Printf("Downloaded the given tar file in %f\n", totalTime)
+	writeResult(totalTime, parallelism)
 	f.Close()
 }
 
-func downloadImageWithHtcatDownloader(bucketName string, key string) {
+func writeResult(totalTime float64, parallel int) {
+	f, err := os.OpenFile("results.txt", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		panic(err)
+	}
+
+	defer f.Close()
+	text := fmt.Sprintf("%s%d%s%f%s", "parallel-", parallel, "- total time :", totalTime, "\n")
+	if _, err = f.WriteString(text); err != nil {
+		panic(err)
+	}
+}
+
+func downloadImageWithHtcatDownloader(bucketName string, key string, parallelism int, chunkSize int) {
 
 	var startTime = time.Now()
-	runTest(bucketName, key)
+	runTest(bucketName, key, parallelism, chunkSize)
 	var totalTime = time.Since(startTime).Seconds()
-	fmt.Printf("Downloaded the given tar file in %f\n", totalTime)
+	writeResult(totalTime, parallelism)
+	fmt.Printf("Time elapsed :  %f\n", totalTime)
 
 }
 
@@ -120,65 +149,26 @@ func getS3PresignedUrl(bucketName string, keyName string) string {
 	return urlStr
 }
 
-func fetchFromHtCat(urlStr string) (io.ReadCloser, error) {
+func fetchFromHtCat(urlStr string, fileName string, parallelism int, chunkSize int) {
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		log.Println("Failed to parse url", err)
 	}
 
 	hc := http.DefaultClient
-	htc := htcat.New(hc, parsedURL, 1, 20)
+	htc := htcat.New(hc, parsedURL, parallelism, chunkSize)
 	// fmt.Println("After htc call")
-	pr, pw := io.Pipe()
-	go func() {
-		defer pw.Close()
-		_, err := htc.WriteTo(pw)
-		if err != nil {
-			log.Println("Failed to fetch url", err)
-		}
-	}()
-	return pr, nil
-}
-
-func runTest(bucketName string, keyName string) {
-
-	url := getS3PresignedUrl(bucketName, keyName)
-
-	// fmt.Println("signed url: ", url)
-	pr, err := fetchFromHtCat(url)
-	if err != nil {
-		fmt.Println("Failed in the test during fetchFromHtcat")
-	}
-	defer pr.Close()
-
-	opFile, err := os.Create(keyName)
+	opFile, err := os.Create(fileName)
 	if err != nil {
 		fmt.Println("Failed in the test during file creation")
 	}
 
 	defer opFile.Close()
 
-	_, err = io.Copy(opFile, pr)
-	if err != nil {
-		fmt.Println("Failed in the test during io Copy")
-	}
-
-	log.Println("Data fetched and written to another file")
-	// rd := bufio.NewReader(stdout)
-	// defer reader.Close()
-	// output, err := io.ReadAll(reader)
-	// if err != nil {
-	// 	fmt.Println("Failed ReadAll")
-	// }
-	// fmt.Print(output)
+	htc.WriteTo(opFile)
 }
 
-/*
-
-	Is io.Copy an unpack? why is it significantly slower than just s3downloader?
-
-	Downloaded the given tar file in 25.986330 - s3Downloader
-	Downloaded the given tar file in 78.803563 - htcat
-	How to effectively benchmark this? Doesn't seem like it is a fair comparision.
-
-*/
+func runTest(bucketName string, keyName string, parallelism int, chunkSize int) {
+	url := getS3PresignedUrl(bucketName, keyName)
+	fetchFromHtCat(url, keyName, parallelism, chunkSize)
+}
