@@ -3,6 +3,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -149,26 +150,67 @@ func getS3PresignedUrl(bucketName string, keyName string) string {
 	return urlStr
 }
 
-func fetchFromHtCat(urlStr string, fileName string, parallelism int, chunkSize int) {
+// func fetchFromHtCat(urlStr string, fileName string, parallelism int, chunkSize int) {
+// 	parsedURL, err := url.Parse(urlStr)
+// 	if err != nil {
+// 		log.Println("Failed to parse url", err)
+// 	}
+
+// 	hc := http.DefaultClient
+// 	htc := htcat.New(hc, parsedURL, parallelism, chunkSize)
+// 	// fmt.Println("After htc call")
+// 	opFile, err := os.Create(fileName)
+// 	if err != nil {
+// 		fmt.Println("Failed in the test during file creation")
+// 	}
+
+// 	defer opFile.Close()
+
+// 	htc.WriteTo(opFile)
+// }
+
+func fetchFromHtCat(urlStr string) (io.ReadCloser, error) {
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		log.Println("Failed to parse url", err)
 	}
 
 	hc := http.DefaultClient
-	htc := htcat.New(hc, parsedURL, parallelism, chunkSize)
+	htc := htcat.New(hc, parsedURL, 1, 20)
 	// fmt.Println("After htc call")
-	opFile, err := os.Create(fileName)
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		_, err := htc.WriteTo(pw)
+		if err != nil {
+			log.Println("Failed to fetch url", err)
+		}
+	}()
+	return pr, nil
+}
+
+func runTest(bucketName string, keyName string, parallelism int, chunkSize int) {
+	url := getS3PresignedUrl(bucketName, keyName)
+	// fetchFromHtCat(url, keyName, parallelism, chunkSize)
+
+	// ======================================================================
+	pr, err := fetchFromHtCat(url)
+	if err != nil {
+		fmt.Println("Failed in the test during fetchFromHtcat")
+	}
+	defer pr.Close()
+
+	opFile, err := os.Create(keyName)
 	if err != nil {
 		fmt.Println("Failed in the test during file creation")
 	}
 
 	defer opFile.Close()
 
-	htc.WriteTo(opFile)
-}
+	_, err = io.Copy(opFile, pr)
+	if err != nil {
+		fmt.Println("Failed in the test during io Copy")
+	}
 
-func runTest(bucketName string, keyName string, parallelism int, chunkSize int) {
-	url := getS3PresignedUrl(bucketName, keyName)
-	fetchFromHtCat(url, keyName, parallelism, chunkSize)
+	// ======================================================================
 }
