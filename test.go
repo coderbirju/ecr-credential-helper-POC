@@ -11,11 +11,14 @@ import (
 	"runtime/pprof"
 	"time"
 
+	"crypto/sha256"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/htcat/htcat"
+	"github.com/opencontainers/go-digest"
 )
 
 func main() {
@@ -24,7 +27,7 @@ func main() {
 	keyName := "3gb-single.tar"
 	chunkSize := 20
 	// parallelism := 1
-	numRuns := 10
+	numRuns := 5
 
 	cpuProfileFile, err := os.Create("cpu.prof")
 	if err != nil {
@@ -38,16 +41,16 @@ func main() {
 	}
 	defer pprof.StopCPUProfile()
 
-	memProfileFile, err := os.Create("mem.prof")
-	if err != nil {
-		panic(err)
-	}
-	defer memProfileFile.Close()
+	// memProfileFile, err := os.Create("mem.prof")
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// defer memProfileFile.Close()
 
-	// Write memory profile to file
-	if err := pprof.WriteHeapProfile(memProfileFile); err != nil {
-		panic(err)
-	}
+	// // Write memory profile to file
+	// if err := pprof.WriteHeapProfile(memProfileFile); err != nil {
+	// 	panic(err)
+	// }
 
 	fileName := fmt.Sprintf("%s%s", "/home/ec2-user/htcat-vs-s3Downloader/", keyName)
 
@@ -56,7 +59,7 @@ func main() {
 			fmt.Printf("Running benchmark %d with parallel args %d... \n", i, j)
 
 			os.Remove(fileName)
-			// downloadImageWithS3Downloader(bucketName, keyName, parallelism, chunkSize)
+			// downloadImageWithS3Downloader(bucketName, keyName, j, chunkSize)
 			downloadImageWithHtcatDownloader(bucketName, keyName, j, chunkSize)
 			fmt.Printf("Run %d with parallel arg %d completed.\n", i, j)
 		}
@@ -109,7 +112,7 @@ func writeResult(totalTime float64, parallel int) {
 	}
 
 	defer f.Close()
-	text := fmt.Sprintf("%s%d%s%f%s", "parallel-", parallel, "- total time :", totalTime, "\n")
+	text := fmt.Sprintf("%s%d%s%f%s", "parallel-", parallel, ":", totalTime, "\n")
 	if _, err = f.WriteString(text); err != nil {
 		panic(err)
 	}
@@ -169,14 +172,14 @@ func getS3PresignedUrl(bucketName string, keyName string) string {
 // 	htc.WriteTo(opFile)
 // }
 
-func fetchFromHtCat(urlStr string) (io.ReadCloser, error) {
+func fetchFromHtCat(urlStr string, parallel int, chunkSize int) (io.ReadCloser, error) {
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		log.Println("Failed to parse url", err)
 	}
 
 	hc := http.DefaultClient
-	htc := htcat.New(hc, parsedURL, 1, 20)
+	htc := htcat.New(hc, parsedURL, parallel, chunkSize)
 	// fmt.Println("After htc call")
 	pr, pw := io.Pipe()
 	go func() {
@@ -193,8 +196,7 @@ func runTest(bucketName string, keyName string, parallelism int, chunkSize int) 
 	url := getS3PresignedUrl(bucketName, keyName)
 	// fetchFromHtCat(url, keyName, parallelism, chunkSize)
 
-	// ======================================================================
-	pr, err := fetchFromHtCat(url)
+	pr, err := fetchFromHtCat(url, parallelism, chunkSize)
 	if err != nil {
 		fmt.Println("Failed in the test during fetchFromHtcat")
 	}
@@ -207,10 +209,14 @@ func runTest(bucketName string, keyName string, parallelism int, chunkSize int) 
 
 	defer opFile.Close()
 
-	_, err = io.Copy(opFile, pr)
+	d := digest.NewDigest("sha256", sha256.New())
+
+	mr := io.MultiReader(pr, io.TeeReader(pr, d.Algorithm().Hash()))
+
+	_, err = io.Copy(opFile, mr)
 	if err != nil {
 		fmt.Println("Failed in the test during io Copy")
 	}
-
-	// ======================================================================
+	digestValue := d.Hex()
+	fmt.Println("Digest value", digestValue)
 }

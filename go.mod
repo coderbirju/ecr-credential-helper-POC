@@ -6,6 +6,7 @@ require github.com/aws/aws-sdk-go v1.51.21
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/opencontainers/go-digest v1.0.0 // indirect
 	golang.org/x/net v0.24.0 // indirect
 )
 
