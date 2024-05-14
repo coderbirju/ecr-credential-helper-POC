@@ -41,20 +41,20 @@ func main() {
 	}
 	defer pprof.StopCPUProfile()
 
-	// memProfileFile, err := os.Create("mem.prof")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// defer memProfileFile.Close()
+	memProfileFile, err := os.Create("mem.prof")
+	if err != nil {
+		panic(err)
+	}
+	defer memProfileFile.Close()
 
-	// // Write memory profile to file
-	// if err := pprof.WriteHeapProfile(memProfileFile); err != nil {
-	// 	panic(err)
-	// }
+	// Write memory profile to file
+	if err := pprof.WriteHeapProfile(memProfileFile); err != nil {
+		panic(err)
+	}
 
 	fileName := fmt.Sprintf("%s%s", "/home/ec2-user/htcat-vs-s3Downloader/", keyName)
 
-	for j := 1; j < 7; j++ {
+	for j := 1; j < 4; j++ {
 		for i := 0; i < numRuns; i++ {
 			fmt.Printf("Running benchmark %d with parallel args %d... \n", i, j)
 
@@ -62,8 +62,15 @@ func main() {
 			// downloadImageWithS3Downloader(bucketName, keyName, j, chunkSize)
 			downloadImageWithHtcatDownloader(bucketName, keyName, j, chunkSize)
 			fmt.Printf("Run %d with parallel arg %d completed.\n", i, j)
-		}
+			// cmd := exec.Command("sudo", "ctr", "content", "push", keyName, "test-ctr")
 
+			// err := cmd.Run()
+			// if err != nil {
+			// 	log.Fatalf("Command failed: %v", err)
+			// } else {
+			// 	log.Println("Command executed successfully.")
+			// }
+		}
 	}
 }
 
